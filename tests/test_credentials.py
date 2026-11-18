@@ -17,13 +17,19 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+import sys
+import types
 import unittest
+import unittest.mock
 
 from perceval.backend import Backend
 from perceval.backends.core.github import GitHub
 from perceval.backends.core.githubql import GitHubQL
 from perceval.backends.core.gitlab import GitLab
-from perceval.credentials import normalize_credentials
+from perceval.credentials import (CREDENTIAL_FIELDS,
+                                  build_credential_manager,
+                                  normalize_credentials,
+                                  resolve_backend_credentials)
 
 
 class SingleValueBackend(Backend):
@@ -34,6 +40,60 @@ class ListValueBackend(Backend):
     """Backend that accepts a pool of API tokens"""
 
     CREDENTIAL_LIST_FIELDS = ('api_token',)
+
+
+class TestBuildCredentialManager(unittest.TestCase):
+    """Unit tests for build_credential_manager"""
+
+    @unittest.mock.patch('grimoirelab_toolkit.credential_manager.bw_manager.BitwardenManager')
+    def test_bitwarden(self, mock_bw):
+        """Test whether a Bitwarden manager is built"""
+
+        manager = build_credential_manager('bitwarden',
+                                           bw_client_id='cid',
+                                           bw_client_secret='csecret',
+                                           bw_master_password='mpass',
+                                           vault_url='http://vault')
+
+        self.assertEqual(manager, mock_bw.return_value)
+        mock_bw.assert_called_once_with('cid', 'csecret', 'mpass')
+
+    def test_hashicorp(self):
+        """Test whether a HashiCorp Vault manager is built"""
+
+        # hvac is an optional dependency, so the module is replaced
+        hc_module = types.ModuleType('grimoirelab_toolkit.credential_manager.hc_manager')
+        hc_module.HashicorpManager = unittest.mock.MagicMock()
+
+        with unittest.mock.patch.dict(sys.modules,
+                                      {hc_module.__name__: hc_module}):
+            manager = build_credential_manager('hashicorp',
+                                               vault_url='http://vault',
+                                               vault_token='token',
+                                               vault_certificate='/ca.crt')
+
+        self.assertEqual(manager, hc_module.HashicorpManager.return_value)
+        hc_module.HashicorpManager.assert_called_once_with('http://vault', 'token', '/ca.crt')
+
+    def test_bitwarden_missing_parameters(self):
+        """Test whether it fails when Bitwarden parameters are missing"""
+
+        with self.assertRaisesRegex(ValueError, 'Bitwarden requires'):
+            build_credential_manager('bitwarden',
+                                     bw_client_id='cid',
+                                     bw_client_secret='csecret')
+
+    def test_hashicorp_missing_parameters(self):
+        """Test whether it fails when HashiCorp Vault parameters are missing"""
+
+        with self.assertRaisesRegex(ValueError, 'HashiCorp Vault requires'):
+            build_credential_manager('hashicorp', vault_url='http://vault')
+
+    def test_unsupported_manager(self):
+        """Test whether it fails with an unknown type of manager"""
+
+        with self.assertRaisesRegex(ValueError, "Unsupported secrets manager: 'keepass'"):
+            build_credential_manager('keepass')
 
 
 class TestNormalizeCredentials(unittest.TestCase):
@@ -104,6 +164,30 @@ class TestNormalizeCredentials(unittest.TestCase):
 
         result = normalize_credentials(GitHub, {'api_token': 'tok1'})
         self.assertDictEqual(result, {'api_token': ['tok1']})
+
+
+class TestResolveBackendCredentials(unittest.TestCase):
+    """Unit tests for resolve_backend_credentials"""
+
+    def test_resolve(self):
+        """Test whether credentials are retrieved and normalized"""
+
+        mock_manager = unittest.mock.MagicMock()
+        mock_manager.resolve_credentials.return_value = {
+            'user': 'alice',
+            'api_token': 'tok1,tok2'
+        }
+
+        result = resolve_backend_credentials(ListValueBackend, mock_manager, 'my-item')
+
+        self.assertDictEqual(result, {
+            'user': 'alice',
+            'api_token': ['tok1', 'tok2']
+        })
+        mock_manager.resolve_credentials.assert_called_once_with(
+            secret_name='my-item',
+            field_names=CREDENTIAL_FIELDS
+        )
 
 
 if __name__ == "__main__":

@@ -23,7 +23,80 @@ CREDENTIAL_FIELDS = ['user', 'password', 'api_token', 'email',
                      'access_token', 'user_id']
 """Fields Perceval looks up in a secret of a credential manager."""
 
+SECRETS_MANAGERS = ['bitwarden', 'hashicorp']
+"""Credential managers supported by Perceval."""
+
 LIST_SEPARATORS = re.compile(r'[,\n]')
+
+
+def build_credential_manager(manager_type, bw_client_id=None,
+                             bw_client_secret=None, bw_master_password=None,
+                             vault_url=None, vault_token=None,
+                             vault_certificate=None):
+    """Build a credential manager.
+
+    Create a credential manager instance of the given type to
+    retrieve credentials. Each type of manager requires its own
+    set of parameters to access the service. Bitwarden requires
+    `bw_client_id`, `bw_client_secret` and `bw_master_password`;
+    HashiCorp Vault (or any Vault compatible service, like OpenBao)
+    requires `vault_url` and `vault_token`.
+
+    :param manager_type: type of the manager; one of `SECRETS_MANAGERS`
+    :param bw_client_id: Bitwarden API client ID
+    :param bw_client_secret: Bitwarden API client secret
+    :param bw_master_password: Bitwarden master password
+    :param vault_url: URL of the Vault server
+    :param vault_token: token to authenticate in the Vault server
+    :param vault_certificate: path to the CA certificate to verify
+        the TLS connection with the Vault server
+
+    :returns: a credential manager instance
+
+    :raises ValueError: when the type of manager is not supported
+        or any of its required parameters is missing
+    """
+    if manager_type == 'bitwarden':
+        if not all([bw_client_id, bw_client_secret, bw_master_password]):
+            raise ValueError(
+                'Bitwarden requires client id, client secret, and master password'
+            )
+
+        from grimoirelab_toolkit.credential_manager.bw_manager import BitwardenManager
+        return BitwardenManager(bw_client_id, bw_client_secret, bw_master_password)
+    elif manager_type == 'hashicorp':
+        if not all([vault_url, vault_token]):
+            raise ValueError('HashiCorp Vault requires url and token')
+
+        from grimoirelab_toolkit.credential_manager.hc_manager import HashicorpManager
+        return HashicorpManager(vault_url, vault_token, vault_certificate)
+
+    raise ValueError(f"Unsupported secrets manager: '{manager_type}'")
+
+
+def resolve_backend_credentials(backend_class, manager, secret_name):
+    """Retrieve the credentials of a backend from a credential manager.
+
+    Read the secret `secret_name` from the credential manager and
+    extract the credential fields that Perceval knows about (see
+    `CREDENTIAL_FIELDS`). The values are adapted to the type
+    of parameter each backend expects (see `normalize_credentials`).
+
+    :param backend_class: backend class that will use the credentials
+    :param manager: credential manager instance
+    :param secret_name: name of the secret in the credential manager
+
+    :returns: a dict with the credentials found in the secret
+
+    :raises ValueError: when `secret_name` is empty or the secret
+        contains several values for a field that the backend
+        only accepts as a single value
+    """
+    credentials = manager.resolve_credentials(
+        secret_name=secret_name,
+        field_names=CREDENTIAL_FIELDS,
+    )
+    return normalize_credentials(backend_class, credentials)
 
 
 def normalize_credentials(backend_class, credentials):
